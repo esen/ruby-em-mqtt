@@ -19,8 +19,8 @@ class EventMachine::MQTT::ClientConnection < EventMachine::MQTT::Connection
   #
   def self.connect(*args, &blk)
     hash = {
-      :host => 'localhost',
-      :port => MQTT::DEFAULT_PORT
+        :host => 'localhost',
+        :port => MQTT::DEFAULT_PORT
     }
 
     i = 0
@@ -72,11 +72,11 @@ class EventMachine::MQTT::ClientConnection < EventMachine::MQTT::Connection
   def connection_completed
     # TCP socket established: send Connect packet
     packet = MQTT::Packet::Connect.new(
-      :client_id => @client_id,
-      :clean_session => @clean_session,
-      :keep_alive => @keep_alive,
-      :username => @username,
-      :password => @password
+        :client_id => @client_id,
+        :clean_session => @clean_session,
+        :keep_alive => @keep_alive,
+        :username => @username,
+        :password => @password
     )
 
     send_packet(packet)
@@ -94,8 +94,20 @@ class EventMachine::MQTT::ClientConnection < EventMachine::MQTT::Connection
     @state = :disconnecting
   end
 
-  def receive_callback(&block)
+  def on_connack(&block)
+    @connect_callback = block
+  end
+
+  def on_publish(&block)
     @receive_callback = block
+  end
+
+  def on_puback(&block)
+    @ack_callback = block
+  end
+
+  def on_error(&block)
+    @error_callback = block
   end
 
   def receive_msg(packet)
@@ -107,7 +119,8 @@ class EventMachine::MQTT::ClientConnection < EventMachine::MQTT::Connection
     timer.cancel if timer
     unless state == :disconnecting
       # Re-throw any exceptions (if present) to avoid swallowed errors.
-      raise $! || MQTT::NotConnectedException.new("Connection to server lost")
+      @error_callback.call('Connection to server lost') unless @error_callback.nil?
+      raise $! if $!
     end
     @state = :disconnected
   end
@@ -117,13 +130,13 @@ class EventMachine::MQTT::ClientConnection < EventMachine::MQTT::Connection
     # Defer publishing until we are connected
     callback do
       send_packet(
-        MQTT::Packet::Publish.new(
-          :id => next_packet_id,
-          :qos => qos,
-          :retain => retain,
-          :topic => topic,
-          :payload => payload
-        )
+          MQTT::Packet::Publish.new(
+              :id => next_packet_id,
+              :qos => qos,
+              :retain => retain,
+              :topic => topic,
+              :payload => payload
+          )
       )
     end
   end
@@ -139,15 +152,15 @@ class EventMachine::MQTT::ClientConnection < EventMachine::MQTT::Connection
   #   cc.subscribe( 'a/b', 'c/d' )
   #   cc.subscribe( ['a/b',0], ['c/d',1] )
   #   cc.subscribe( 'a/b' => 0, 'c/d' => 1 )
-  
+
   def subscribe(*topics)
     # Defer subscribing until we are connected
     callback do
       send_packet(
-        MQTT::Packet::Subscribe.new(
-          :id => next_packet_id,
-          :topics => topics
-        )
+          MQTT::Packet::Subscribe.new(
+              :id => next_packet_id,
+              :topics => topics
+          )
       )
     end
   end
@@ -157,17 +170,17 @@ class EventMachine::MQTT::ClientConnection < EventMachine::MQTT::Connection
     # Defer unsubscribing until we are connected
     callback do
       send_packet(
-        MQTT::Packet::Unsubscribe.new(
-          :id => next_packet_id,
-          :topics => topics
-        )
+          MQTT::Packet::Unsubscribe.new(
+              :id => next_packet_id,
+              :topics => topics
+          )
       )
     end
   end
 
 
 
-private
+  private
 
   def process_packet(packet)
     if state == :connect_sent and packet.class == MQTT::Packet::Connack
@@ -176,12 +189,14 @@ private
       # Pong!
     elsif state == :connected and packet.class == MQTT::Packet::Publish
       receive_msg(packet)
+    elsif state == :connected and packet.class == MQTT::Packet::Puback
+      receive_ack(packet)
     elsif state == :connected and packet.class == MQTT::Packet::Suback
       # Subscribed!
     else
       # FIXME: deal with other packet types
       raise MQTT::ProtocolException.new(
-        "Wasn't expecting packet of type #{packet.class} when in state #{state}"
+          "Wasn't expecting packet of type #{packet.class} when in state #{state}"
       )
       disconnect
     end
@@ -203,6 +218,13 @@ private
 
     # We are now connected - can now execute deferred calls
     set_deferred_success
+
+    # Call the callback if exists
+    @connect_callback.call(packet) unless @connect_callback.nil?
+  end
+
+  def receive_ack(packet)
+    @ack_callback.call(packet) unless @ack_callback.nil?
   end
 
   def next_packet_id
